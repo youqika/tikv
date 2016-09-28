@@ -81,9 +81,13 @@ pub trait Snapshot: Send {
     fn get(&self, key: &Key) -> Result<Option<Value>>;
     fn get_cf(&self, cf: CfName, key: &Key) -> Result<Option<Value>>;
     #[allow(needless_lifetimes)]
-    fn iter<'a>(&'a self, upper_bound: Option<&[u8]>) -> Result<Cursor<'a>>;
+    fn iter<'a>(&'a self, upper_bound: Option<&[u8]>, linear: bool) -> Result<Cursor<'a>>;
     #[allow(needless_lifetimes)]
-    fn iter_cf<'a>(&'a self, cf: CfName, upper_bound: Option<&[u8]>) -> Result<Cursor<'a>>;
+    fn iter_cf<'a>(&'a self,
+                   cf: CfName,
+                   upper_bound: Option<&[u8]>,
+                   linear: bool)
+                   -> Result<Cursor<'a>>;
 }
 
 pub trait Iterator {
@@ -100,14 +104,17 @@ pub trait Iterator {
 
 pub struct Cursor<'a> {
     iter: Box<Iterator + 'a>,
+    /// Indicate whether the cursor will always be seek forward or always be seek backward.
+    linear: bool,
     upper: Option<Vec<u8>>,
     lower: Option<Vec<u8>>,
 }
 
 impl<'a> Cursor<'a> {
-    pub fn new<T: Iterator + 'a>(iter: T) -> Cursor<'a> {
+    pub fn new<T: Iterator + 'a>(iter: T, linear: bool) -> Cursor<'a> {
         Cursor {
             iter: Box::new(iter),
+            linear: linear,
             upper: None,
             lower: None,
         }
@@ -116,6 +123,10 @@ impl<'a> Cursor<'a> {
     pub fn seek(&mut self, key: &Key) -> Result<bool> {
         if self.lower.as_ref().map_or(false, |k| k <= key.encoded()) {
             return Ok(false);
+        }
+
+        if self.linear && self.valid() && self.iter.key() >= key.encoded() {
+            return Ok(true);
         }
 
         if !try!(self.iter.seek(key)) {
@@ -133,7 +144,7 @@ impl<'a> Cursor<'a> {
         if !self.iter.valid() {
             return self.seek(key);
         }
-        if self.iter.key() == &**key.encoded() {
+        if self.iter.key() == &**key.encoded() || (self.linear && self.iter.key() > key.encoded()) {
             return Ok(true);
         }
         if self.lower.as_ref().map_or(false, |k| k <= key.encoded()) {
@@ -186,6 +197,9 @@ impl<'a> Cursor<'a> {
         if self.upper.as_ref().map_or(false, |k| k >= key.encoded()) {
             return Ok(false);
         }
+        if self.linear && self.valid() && self.iter.key() < key.encoded() {
+            return Ok(true);
+        }
         if !try!(self.seek(key)) && !self.iter.seek_to_last() {
             self.upper = Some(key.encoded().to_owned());
             return Ok(false);
@@ -209,7 +223,11 @@ impl<'a> Cursor<'a> {
         if self.upper.as_ref().map_or(false, |k| k >= key.encoded()) {
             return Ok(false);
         }
-        
+
+        if self.linear && self.valid() && self.iter.key() < key.encoded() {
+            return Ok(true);
+        }
+
         if !try!(self.near_seek(key)) && !self.iter.seek_to_last() {
             self.upper = Some(key.encoded().to_owned());
             return Ok(false);
@@ -386,7 +404,7 @@ mod tests {
 
     fn assert_seek(engine: &Engine, key: &[u8], pair: (&[u8], &[u8])) {
         let snapshot = engine.snapshot(&Context::new()).unwrap();
-        let mut iter = snapshot.iter(None).unwrap();
+        let mut iter = snapshot.iter(None, false).unwrap();
         iter.seek(&make_key(key)).unwrap();
         assert_eq!((iter.key(), iter.value()),
                    (&*bytes::encode_bytes(pair.0), pair.1));
@@ -394,7 +412,7 @@ mod tests {
 
     fn assert_reverse_seek(engine: &Engine, key: &[u8], pair: (&[u8], &[u8])) {
         let snapshot = engine.snapshot(&Context::new()).unwrap();
-        let mut iter = snapshot.iter(None).unwrap();
+        let mut iter = snapshot.iter(None, false).unwrap();
         iter.reverse_seek(&make_key(key)).unwrap();
         assert_eq!((iter.key(), iter.value()),
                    (&*bytes::encode_bytes(pair.0), pair.1));
@@ -448,7 +466,7 @@ mod tests {
         assert_reverse_seek(engine, b"y", (b"x", b"1"));
         assert_reverse_seek(engine, b"z", (b"x", b"1"));
         let snapshot = engine.snapshot(&Context::new()).unwrap();
-        let mut iter = snapshot.iter(None).unwrap();
+        let mut iter = snapshot.iter(None, false).unwrap();
         assert!(!iter.seek(&make_key(b"z\x00")).unwrap());
         assert!(!iter.reverse_seek(&make_key(b"x")).unwrap());
         must_delete(engine, b"x");
@@ -459,7 +477,7 @@ mod tests {
         must_put(engine, b"x", b"1");
         must_put(engine, b"z", b"2");
         let snapshot = engine.snapshot(&Context::new()).unwrap();
-        let mut cursor = snapshot.iter(None).unwrap();
+        let mut cursor = snapshot.iter(None, false).unwrap();
         assert_near_seek(&mut cursor, b"x", (b"x", b"1"));
         assert_near_seek(&mut cursor, b"a", (b"x", b"1"));
         assert_near_reverse_seek(&mut cursor, b"z1", (b"z", b"2"));
@@ -473,7 +491,7 @@ mod tests {
             must_put(engine, key.as_bytes(), b"3");
         }
         let snapshot = engine.snapshot(&Context::new()).unwrap();
-        let mut cursor = snapshot.iter(None).unwrap();
+        let mut cursor = snapshot.iter(None, false).unwrap();
         assert_near_seek(&mut cursor, b"x", (b"x", b"1"));
         assert_near_seek(&mut cursor, b"z", (b"z", b"2"));
 

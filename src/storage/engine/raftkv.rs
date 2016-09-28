@@ -276,16 +276,17 @@ impl Snapshot for RegionSnapshot {
     }
 
     #[allow(needless_lifetimes)]
-    fn iter<'b>(&'b self, upper_bound: Option<&[u8]>) -> engine::Result<Cursor<'b>> {
-        Ok(Cursor::new(RegionSnapshot::iter(self, upper_bound)))
+    fn iter<'b>(&'b self, upper_bound: Option<&[u8]>, linear: bool) -> engine::Result<Cursor<'b>> {
+        Ok(Cursor::new(RegionSnapshot::iter(self, upper_bound), linear))
     }
 
     #[allow(needless_lifetimes)]
     fn iter_cf<'b>(&'b self,
                    cf: CfName,
-                   upper_bound: Option<&[u8]>)
+                   upper_bound: Option<&[u8]>,
+                   linear: bool)
                    -> engine::Result<Cursor<'b>> {
-        Ok(Cursor::new(try!(RegionSnapshot::iter_cf(self, cf, upper_bound))))
+        Ok(Cursor::new(try!(RegionSnapshot::iter_cf(self, cf, upper_bound)), linear))
     }
 }
 
